@@ -1,0 +1,136 @@
+import std.net.{ TcpListener }
+import std.http.{ HttpRequest, HttpResponse }
+import std.regex.Regex
+
+type MiddlewareHandle =
+    | Next { request: HttpRequest }
+    | Finish { response: HttpResponse }
+
+type Middleware = {
+    method: string
+    path: Regex
+    handler: (HttpRequest) -> MiddlewareHandle
+}
+
+type RequestHandler = {
+    method: string
+    path: Regex
+    handler: (HttpRequest) -> HttpResponse
+}
+
+fun _setup(host, port) {
+    return TcpListener.bind(host, port)!
+}
+
+type HttpServer = {
+    _listener: TcpListener
+    _middlewares: Middleware[]
+    _handlers: RequestHandler[]
+}
+
+fun HttpServer.new(host: string, port: int64) {
+    const listener = _setup(host, port)!
+    return HttpServer { _listener: listener, _middlewares: [], _handlers: [] }
+}
+
+/**
+    Register request handler to the HTTP server
+
+    An argument `path` is interpreted as a regular expression.
+ */
+fun HttpServer.register(
+    self,
+    method: string,
+    path: string,
+    handler: (HttpRequest) -> HttpResponse,
+) {
+    const path_re = Regex.new(path)!
+    self._handlers.push(
+        RequestHandler { method: method, path: path_re, handler: handler },
+    )
+}
+
+fun HttpServer.register_middleware(
+    self,
+    handler: (HttpRequest) -> MiddlewareHandle,
+) {
+}
+
+fun HttpServer._middleware_pass(self, req: HttpRequest) {
+    for middle in self._middlewares {
+        req = match middle.handler(req) {
+            Next { request } => request,
+            Finish { response } => {
+                return MiddlewareHandle.Finish { response: response }
+            },
+        }
+    }
+    return MiddlewareHandle.Next { request: req }
+}
+fun HttpServer._handler_pass(self, req: HttpRequest) {
+    for handler in self._handlers {
+        if handler.method == req.method && handler.path.is_match(req.path) {
+            return handler.handler(req)
+        }
+    }
+    return HttpResponse {
+        version: "HTTP/1.1",
+        status: 404,
+        reason: "Not Found",
+        headers: [],
+        body: [],
+    }
+}
+
+fun HttpServer._accept_once(self) {
+    if let Ok { value } = self._listener.accept() {
+        let sock = value
+        spawn(
+            () -> {
+                let req = []
+                while true {
+                    if let Ok { value } = sock.read(4096) {
+                        for v in value {
+                            req.push(v)
+                        }
+                        if value.len() < 4096 {
+                            break
+                        }
+                    } else {
+                        sock.close()
+                        return
+                    }
+                }
+                const parsed = if let Ok { value } = to_text(req) {
+                    if let Ok { value } = HttpRequest.parse(value) {
+                        value
+                    } else {
+                        sock.close()
+                        return
+                    }
+                } else {
+                    sock.close()
+                    return
+                }
+                const req = match self._middleware_pass(parsed) {
+                    Next { request } => request,
+                    Finish { response } => {
+                        sock.write(response.serialize())
+                        sock.close()
+                        return
+                    },
+                }
+                const resp = self._handler_pass(req)
+                sock.write(resp.serialize())
+                sock.close()
+                return
+            },
+        )
+    }
+}
+
+fun HttpServer.serve(self) {
+    while true {
+        self._accept_once()
+    }
+}

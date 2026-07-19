@@ -1,0 +1,53 @@
+import std.path.Path
+import std.fs.File
+import std.http.{ HttpResponse, Header }
+import serve.HttpServer
+
+fun serve_current_dir(port: int64) {
+    let server = HttpServer.new("0.0.0.0", port)!
+    server.register(
+        "GET",
+        "^.*$",
+        (req) -> {
+            const path = Path.parse(req.path)
+            let components = path.components().filter((v) -> 0 < v.len())
+            if 0 < components.len() && components[0] == "/" {
+                components = components.slice(1, components.len())
+            }
+            let path = Path.parse(components.join("/"))
+            if path.is_dir() {
+                path = path.join("index.html")
+            }
+            if path.is_file() {
+                if let Ok { value } = File.open(path, "r") {
+                    const file = value
+                    if let Ok { value } = path.file_size() {
+                        const size = value
+                        if let Ok { value } = file.read(10000000) { // 1MB
+                            return HttpResponse {
+                                version: "HTTP/1.1",
+                                status: 200,
+                                reason: "OK",
+                                headers: [
+                                    Header {
+                                        name: "Content-Length",
+                                        value: "{size}",
+                                    },
+                                ],
+                                body: value,
+                            }
+                        }
+                    }
+                }
+            }
+            return HttpResponse {
+                version: "HTTP/1.1",
+                status: 404,
+                reason: "Not Found",
+                headers: [],
+                body: [],
+            }
+        },
+    )
+    server.serve()
+}
