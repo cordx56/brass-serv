@@ -1,6 +1,6 @@
 [package]
 name = "serv"
-author = "Yuki Okamoto <cord@x56.cx>"
+authors = "Yuki Okamoto <cord@x56.cx>"
 license = "MIT"
 
 [dependencies]
